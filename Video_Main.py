@@ -7,16 +7,16 @@ import threading
 import time
 import signal
 import sys
-from moviepy.editor import VideoFileClip
+from moviepy.editor import VideoFileClip, AudioFileClip
 
 # 播放音频文件(音频文件路径，停止事件, 倍数播放)
-def play_audio(audio_file, stop_event, start_time=0, fast_forward_event=None):
+def play_audio(audio_file, stop_event, start_time=0, fast_forward_event=None, speed_factor=1.0):
     wf = wave.open(audio_file, 'rb')  # 打开音频文件
     # 创建音频流
     p = pyaudio.PyAudio()
     stream = p.open(format=p.get_format_from_width(wf.getsampwidth()),
                     channels=wf.getnchannels(),
-                    rate=wf.getframerate(),
+                    rate=int(wf.getframerate() * speed_factor),  # 调整播放速率
                     output=True)
 
     chunk = 1024
@@ -39,14 +39,13 @@ def play_audio(audio_file, stop_event, start_time=0, fast_forward_event=None):
 
 # 从视频中提取音频并保存为临时文件(输入视频文件路径，保存的音频文件路径)
 def extract_audio(video_file, audio_file):
-    import moviepy.editor as mp
-    video = mp.VideoFileClip(video_file)
+    video = VideoFileClip(video_file)
     video.audio.write_audiofile(audio_file)  # 提取并保存音频文件
 
 # 播放视频(视频文件路径，停止事件，窗口名称，窗口大小, 放大比例)
-def play_video(video_file, stop_event, window_name, window_size, zoom_factor=1.0, start_time=0, fast_forward_event=None):
+def play_video(video_file, stop_event, window_name, window_size, zoom_factor=1.0, start_time=0, fast_forward_event=None, speed_factor=1.0):
     cap = cv2.VideoCapture(video_file)
-    fps = cap.get(cv2.CAP_PROP_FPS)
+    fps = cap.get(cv2.CAP_PROP_FPS) * speed_factor  # 调整播放速率
     frame_time = 1.0 / fps
 
     cap.set(cv2.CAP_PROP_POS_MSEC, start_time * 1000)
@@ -58,7 +57,7 @@ def play_video(video_file, stop_event, window_name, window_size, zoom_factor=1.0
     while cap.isOpened() and not stop_event.is_set():
         ret, frame = cap.read()
         if not ret:
-            return "finished", current_time
+            return "finished", current_time, speed_factor
 
         # 获取原始帧的尺寸
         height, width, channels = frame.shape
@@ -84,11 +83,11 @@ def play_video(video_file, stop_event, window_name, window_size, zoom_factor=1.0
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             stop_event.set()
-            break
+            return "stop", current_time, speed_factor
         elif key == ord('a'):
-            return "previous", current_time
+            return "previous", current_time, speed_factor
         elif key == ord('d'):
-            return "next", current_time
+            return "next", current_time, speed_factor
         elif key == ord('w'):
             zoom_factor += 1.0
         elif key == ord('s'):
@@ -100,10 +99,17 @@ def play_video(video_file, stop_event, window_name, window_size, zoom_factor=1.0
             cap.set(cv2.CAP_PROP_POS_MSEC, current_time * 1000)
             if fast_forward_event:
                 fast_forward_event.set()
+        elif key == ord('p'):
+            if speed_factor == 1.0:
+                speed_factor = 2.0
+            else:
+                speed_factor = 1.0
+            # Continue with current_time and updated speed_factor
+            return "speed_change", current_time, speed_factor
 
     cap.release()
     cv2.destroyAllWindows()
-    return "stop", current_time
+    return "stop", current_time, speed_factor
 
 def signal_handler(sig, frame):
     print("Interrupt received, stopping...")
@@ -129,17 +135,18 @@ if __name__ == "__main__":
     current_video_indx = 0
     zoom_factor = 1.0
     start_time = 0
+    speed_factor = 1.0
 
     while 0 <= current_video_indx < len(video_files):
         video = video_files[current_video_indx]
         audio = audio_files[current_video_indx]
 
         stop_event.clear()  # 复位停止事件
-        audio_thread = threading.Thread(target=play_audio, args=(audio, stop_event, start_time, fast_forward_event))
+        audio_thread = threading.Thread(target=play_audio, args=(audio, stop_event, start_time, fast_forward_event, speed_factor))
         audio_thread.start()
         window_name = 'Video'
         window_size = (800, 600)
-        result, current_time = play_video(video, stop_event, window_name, window_size, zoom_factor, start_time, fast_forward_event)
+        result, current_time, speed_factor = play_video(video, stop_event, window_name, window_size, zoom_factor, start_time, fast_forward_event, speed_factor)
 
         stop_event.set()  # 停止播放音频文件
         audio_thread.join()
@@ -153,6 +160,10 @@ if __name__ == "__main__":
         elif result == "finished":
             current_video_indx += 1
             start_time = 0
+        elif result == "speed_change":
+            start_time = current_time  # Keep current_time unchanged
+        elif result == "stop":
+            break
         else:
             start_time = current_time
 
